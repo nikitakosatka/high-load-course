@@ -9,6 +9,7 @@ import org.slf4j.LoggerFactory
 import ru.quipy.common.utils.CompositeRateLimiter
 import ru.quipy.common.utils.FixedWindowRateLimiter
 import ru.quipy.common.utils.LeakingBucketRateLimiter
+import ru.quipy.common.utils.NonBlockingOngoingWindow
 import ru.quipy.core.EventSourcingService
 import ru.quipy.payments.api.PaymentAggregate
 import java.net.SocketTimeoutException
@@ -42,6 +43,10 @@ class PaymentExternalSystemAdapterImpl(
     private val rateLimitPerSec = properties.rateLimitPerSec
     private val parallelRequests = properties.parallelRequests
 
+    private val ongoingWindow = NonBlockingOngoingWindow(
+        maxWinSize = parallelRequests,
+    )
+
     private val client = OkHttpClient.Builder().build()
 
     override fun performPaymentAsync(paymentId: UUID, amount: Int, paymentStartedAt: Long, deadline: Long) {
@@ -57,6 +62,13 @@ class PaymentExternalSystemAdapterImpl(
         }
 
         delay()
+
+        while (true) {
+            if (ongoingWindow.putIntoWindow() is NonBlockingOngoingWindow.WindowResponse.Success) {
+                break
+            }
+        }
+
 
         val request = Request.Builder().run {
             url("http://localhost:1234/external/process?serviceName=${serviceName}&accountName=${accountName}&transactionId=$transactionId&paymentId=$paymentId&amount=$amount")
@@ -98,6 +110,8 @@ class PaymentExternalSystemAdapterImpl(
                 }
             }
         }
+
+        ongoingWindow.releaseWindow()
     }
 
 
